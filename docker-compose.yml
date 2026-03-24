@@ -1,0 +1,26 @@
+services:
+  cli-troubleshooter:
+    build: .
+    container_name: cli-troubleshooter
+    ports:
+      - "8080:8080"
+    volumes:
+      # Baza danych persystuje między restartami
+      - ./data:/app/data
+      # Plik konfiguracyjny (skopiuj .env.example -> .env i uzupełnij)
+      - ./.env:/app/.env:ro
+    cap_add:
+      # Wymagane do działania ping i traceroute
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      - CT_USERNAME=admin
+      - CT_PASSWORD=admin123
+      - CT_SECRET_KEY=change-me-in-production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

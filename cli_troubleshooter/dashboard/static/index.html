@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="pl" x-data="app()" x-init="init()" :class="darkMode ? 'dark' : ''">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CLI Troubleshooter</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' }</script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    [x-cloak]{display:none!important}
+    .spin{animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #traceMap{height:280px;border-radius:8px;z-index:1}
+    .dark #traceMap .leaflet-tile{filter:invert(1) hue-rotate(180deg) brightness(0.9)}
+    pre{white-space:pre-wrap;word-break:break-word}
+    .token-stream::after{content:'▋';animation:blink 1s step-end infinite}
+    @keyframes blink{50%{opacity:0}}
+    ::-webkit-scrollbar{width:6px;height:6px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:#4b5563;border-radius:3px}
+  </style>
+</head>
+<body class="bg-gray-950 dark:bg-gray-950 text-gray-100 min-h-screen transition-colors">
+
+<!-- LOGIN PAGE -->
+<div x-show="!isLoggedIn && authRequired" x-cloak class="min-h-screen flex items-center justify-center">
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-8 w-full max-w-sm shadow-2xl">
+    <div class="text-center mb-8">
+      <div class="text-4xl mb-3">🔍</div>
+      <h1 class="text-2xl font-bold text-white">CLI Troubleshooter</h1>
+      <p class="text-gray-500 text-sm mt-1">Network Diagnostics AI</p>
+    </div>
+    <form @submit.prevent="doLogin()">
+      <div class="mb-4">
+        <label class="block text-sm text-gray-400 mb-1">Login</label>
+        <input x-model="loginForm.username" type="text" placeholder="admin"
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-cyan-500"/>
+      </div>
+      <div class="mb-6">
+        <label class="block text-sm text-gray-400 mb-1">Hasło</label>
+        <input x-model="loginForm.password" type="password" placeholder="••••••••"
+          class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-cyan-500"/>
+      </div>
+      <div x-show="loginError" class="mb-4 text-red-400 text-sm text-center" x-text="loginError"></div>
+      <button type="submit" class="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-2.5 rounded-lg transition">
+        Zaloguj się
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div x-show="isLoggedIn || !authRequired" x-cloak class="flex h-screen overflow-hidden">
+
+  <!-- SIDEBAR -->
+  <aside class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col py-5 px-3 flex-shrink-0">
+    <div class="px-3 mb-6">
+      <div class="text-cyan-400 font-bold text-base">🔍 CLI Troubleshooter</div>
+      <div class="text-gray-600 text-xs mt-0.5">Network Diagnostics AI</div>
+    </div>
+    <nav class="flex flex-col gap-0.5 flex-1">
+      <template x-for="p in pages" :key="p.id">
+        <button @click="navigate(p.id)"
+          :class="currentPage===p.id?'bg-cyan-900/60 text-cyan-300':'text-gray-400 hover:bg-gray-800 hover:text-white'"
+          class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition">
+          <span x-text="p.icon" class="w-4 text-center"></span>
+          <span x-text="p.label"></span>
+          <span x-show="p.id==='alerts' && unreadAlerts>0"
+            class="ml-auto bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center"
+            x-text="unreadAlerts"></span>
+        </button>
+      </template>
+    </nav>
+    <div class="px-3 pt-4 border-t border-gray-800 flex items-center justify-between">
+      <button @click="darkMode=!darkMode;savePref()" class="text-gray-500 hover:text-gray-300 text-lg" :title="darkMode?'Jasny':'Ciemny'">
+        <span x-text="darkMode?'☀️':'🌙'"></span>
+      </button>
+      <button @click="doLogout()" class="text-gray-500 hover:text-red-400 text-xs">wyloguj</button>
+    </div>
+  </aside>
+
+  <!-- CONTENT -->
+  <main class="flex-1 overflow-y-auto bg-gray-950">
+
+    <!-- ═══════════ PAGE: OVERVIEW ═══════════ -->
+    <div x-show="currentPage==='overview'" x-cloak class="p-6">
+      <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold">Przegląd</h1>
+        <button @click="loadOverview()" class="text-cyan-400 hover:text-cyan-300 text-sm">↺ Odśwież</button>
+      </div>
+      <div x-show="overviewTargets.length===0" class="text-gray-600 text-center py-16">
+        Brak historii. Uruchom pierwszą diagnostykę.
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 mb-8">
+        <template x-for="t in overviewTargets" :key="t.target">
+          <div @click="navigate('diagnose');form.target=t.target"
+            class="bg-gray-900 border rounded-xl p-4 cursor-pointer hover:border-cyan-700 transition"
+            :class="{
+              'border-green-700/60': t.status==='ok',
+              'border-yellow-600/60': t.status==='warning',
+              'border-red-700/60': t.status==='error',
+              'border-gray-700': !['ok','warning','error'].includes(t.status)
+            }">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-mono text-sm font-semibold truncate" x-text="t.target"></span>
+              <span class="w-2 h-2 rounded-full flex-shrink-0"
+                :class="{'bg-green-400':t.status==='ok','bg-yellow-400':t.status==='warning','bg-red-400':t.status==='error','bg-gray-600':!t.status}"></span>
+            </div>
+            <div class="text-xs text-gray-500 mb-2" x-text="t.profile+' · '+t.checks+' checks'"></div>
+            <div class="flex items-center justify-between">
+              <span class="text-xs" :class="t.risk_score<30?'text-green-400':t.risk_score<60?'text-yellow-400':'text-red-400'"
+                x-text="'Ryzyko: '+t.risk_score+'/100'"></span>
+              <span x-show="t.category && t.category!=='ok'"
+                class="text-xs bg-gray-800 text-cyan-400 px-2 py-0.5 rounded" x-text="t.category"></span>
+            </div>
+            <div class="text-xs text-gray-600 mt-2" x-text="t.ago"></div>
+          </div>
+        </template>
+      </div>
+      <!-- Risk chart -->
+      <div x-show="overviewTargets.length>0" class="bg-gray-900 rounded-xl border border-gray-800 p-5">
+        <h2 class="text-sm font-semibold text-gray-400 mb-4">Risk Score — ostatnie diagnostyki</h2>
+        <canvas id="overviewChart" height="70"></canvas>
+      </div>
+    </div>
+
+    <!-- ═══════════ PAGE: DIAGNOSE ═══════════ -->
+    <div x-show="currentPage==='diagnose'" x-cloak class="p-6">
+      <h1 class="text-2xl font-bold mb-6">Diagnostyka sieci</h1>
+
+      <!-- Form -->
+      <div class="bg-gray-900 rounded-xl p-5 mb-5 border border-gray-800">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div class="md:col-span-2">
+            <label class="block text-xs text-gray-400 mb-1">Target</label>
+            <input x-model="form.target" @keydown.enter="startDiagnose()" type="text"
+              placeholder="np. google.com lub 8.8.8.8"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500"/>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Profil</label>
+            <select x-model="form.profile" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-cyan-500">
+              <option value="quick">quick — szybki (DNS+Ping+HTTP)</option>
+              <option value="full">full — pełny (wszystkie)</option>
+              <option value="web">web — serwery HTTP</option>
+              <option value="connectivity">connectivity — łączność</option>
+            </select>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-4">
+          <button @click="startDiagnose()" :disabled="running||!form.target"
+            class="bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold px-6 py-2 rounded-lg transition flex items-center gap-2">
+            <svg x-show="running" class="spin w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            <span x-text="running?'Diagnostyka...':'▶ Uruchom'"></span>
+          </button>
+          <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
+            <input type="checkbox" x-model="form.use_ai" class="accent-cyan-500"/> AI Summary (Claude)
+          </label>
+        </div>
+      </div>
+
+      <!-- Check progress grid -->
+      <div x-show="checks.length>0" x-cloak class="bg-gray-900 rounded-xl p-5 mb-5 border border-gray-800">
+        <h2 class="text-sm font-semibold text-gray-400 mb-3">Postęp</h2>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+          <template x-for="c in checks" :key="c.name">
+            <div class="border rounded-lg p-3 transition"
+              :class="{
+                'border-cyan-600 bg-cyan-950/40': c.state==='running',
+                'border-green-700 bg-green-950/30': c.state==='ok',
+                'border-yellow-600 bg-yellow-950/30': c.state==='warning',
+                'border-red-700 bg-red-950/30': c.state==='error'||c.state==='timeout',
+                'border-gray-800 bg-gray-900': c.state==='pending'||c.state==='skipped'
+              }">
+              <div class="flex items-center gap-1.5 mb-1">
+                <span x-show="c.state==='running'" class="spin text-cyan-400 text-xs">⟳</span>
+                <span x-show="c.state==='ok'" class="text-green-400 text-xs">✓</span>
+                <span x-show="c.state==='warning'" class="text-yellow-400 text-xs">⚠</span>
+                <span x-show="c.state==='error'||c.state==='timeout'" class="text-red-400 text-xs">✗</span>
+                <span x-show="c.state==='pending'||c.state==='skipped'" class="text-gray-600 text-xs">○</span>
+                <span class="font-mono text-xs font-semibold" x-text="c.name"></span>
+              </div>
+              <div class="text-xs text-gray-500 truncate" x-text="c.summary||c.state"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Results table -->
+      <div x-show="Object.keys(results).length>0" x-cloak class="bg-gray-900 rounded-xl p-5 mb-5 border border-gray-800">
+        <h2 class="text-sm font-semibold text-gray-400 mb-3">Wyniki</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-gray-500 border-b border-gray-800 text-xs">
+              <th class="text-left pb-2 pr-4">Check</th><th class="text-left pb-2 pr-4">Status</th>
+              <th class="text-left pb-2 pr-4">Czas</th><th class="text-left pb-2">Podsumowanie</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="[name,r] in Object.entries(results)" :key="name">
+                <tr class="border-b border-gray-800/50 hover:bg-gray-800/20">
+                  <td class="py-2 pr-4 font-mono font-semibold text-xs" x-text="name"></td>
+                  <td class="py-2 pr-4"><span :class="badgeClass(r.status)" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="r.status"></span></td>
+                  <td class="py-2 pr-4 text-gray-500 text-xs" x-text="r.duration_s?(r.duration_s.toFixed(1)+'s'):'—'"></td>
+                  <td class="py-2 text-gray-300 text-xs" x-text="r.summary"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Traceroute map -->
+      <div x-show="hasMapData" x-cloak class="bg-gray-900 rounded-xl p-5 mb-5 border border-gray-800">
+        <h2 class="text-sm font-semibold text-gray-400 mb-3">🗺 Mapa traceroute</h2>
+        <div id="traceMap"></div>
+      </div>
+
+      <!-- AI Summary -->
+      <div x-show="aiText||aiStreaming" x-cloak class="bg-gray-900 rounded-xl p-5 border border-blue-900/60">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-3">
+            <span class="text-blue-400 font-semibold text-sm">🤖 AI Summary</span>
+            <span x-show="aiCategory && aiCategory!=='ok'"
+              class="bg-cyan-900/50 text-cyan-300 text-xs px-2 py-0.5 rounded-full" x-text="aiCategory"></span>
+          </div>
+          <div class="flex items-center gap-4">
+            <span class="text-xs text-gray-500">Ryzyko:</span>
+            <span class="font-bold text-lg" :class="riskScore<30?'text-green-400':riskScore<60?'text-yellow-400':'text-red-400'"
+              x-text="riskScore+'/100'"></span>
+          </div>
+        </div>
+        <pre class="text-gray-300 text-sm leading-relaxed" :class="aiStreaming?'token-stream':''" x-text="aiText"></pre>
+
+        <!-- Command suggestions -->
+        <div x-show="aiCommands.length>0" class="mt-4 border-t border-gray-800 pt-4">
+          <div class="text-xs text-gray-500 mb-2">💻 Sugerowane komendy:</div>
+          <div class="space-y-1.5">
+            <template x-for="cmd in aiCommands" :key="cmd">
+              <div class="flex items-center gap-2 bg-gray-950 rounded px-3 py-1.5 group">
+                <code class="text-green-400 text-xs flex-1" x-text="cmd"></code>
+                <button @click="copyCmd(cmd)" class="text-gray-600 hover:text-gray-300 text-xs opacity-0 group-hover:opacity-100 transition">kopiuj</button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ PAGE: HISTORY ═══════════ -->
+    <div x-show="currentPage==='history'" x-cloak class="p-6">
+      <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold">Historia</h1>
+        <div class="flex gap-2">
+          <input x-model="historyFilter" type="text" placeholder="Filtruj po target..."
+            class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-cyan-500 w-48"/>
+          <button @click="loadHistory()" class="text-cyan-400 hover:text-cyan-300 text-sm px-2">↺</button>
+        </div>
+      </div>
+
+      <!-- Latency chart -->
+      <div x-show="historyItems.length>0" class="bg-gray-900 rounded-xl border border-gray-800 p-5 mb-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-gray-400">Risk Score — ostatnie 20 diagnostyk</h2>
+        </div>
+        <canvas id="riskChart" height="70"></canvas>
+      </div>
+
+      <!-- Compare selector -->
+      <div x-show="selectedForCompare.length>0" class="bg-blue-950/40 border border-blue-800/50 rounded-xl p-4 mb-4 flex items-center justify-between">
+        <span class="text-sm text-blue-300">Wybrano <strong x-text="selectedForCompare.length"></strong> run(y) do porównania</span>
+        <div class="flex gap-2">
+          <button x-show="selectedForCompare.length===2" @click="navigate('compare')"
+            class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-1.5 rounded-lg">Porównaj</button>
+          <button @click="selectedForCompare=[]" class="text-gray-500 hover:text-gray-300 text-sm">Anuluj</button>
+        </div>
+      </div>
+
+      <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-800/80">
+            <tr class="text-gray-400 text-xs">
+              <th class="px-4 py-3 text-left w-8"><input type="checkbox" @change="toggleSelectAll($event)" class="accent-cyan-500"/></th>
+              <th class="px-4 py-3 text-left">ID</th>
+              <th class="px-4 py-3 text-left">Target</th>
+              <th class="px-4 py-3 text-left">Profil</th>
+              <th class="px-4 py-3 text-left">Kategoria</th>
+              <th class="px-4 py-3 text-left">Status</th>
+              <th class="px-4 py-3 text-left">Ryzyko</th>
+              <th class="px-4 py-3 text-left">Czas</th>
+              <th class="px-4 py-3 text-left">Akcje</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="run in filteredHistory" :key="run.id">
+              <tr class="border-t border-gray-800/50 hover:bg-gray-800/30 cursor-pointer" @click="viewRun(run.id)">
+                <td class="px-4 py-3" @click.stop>
+                  <input type="checkbox" :value="run.id" x-model="selectedForCompare" class="accent-cyan-500"
+                    :disabled="selectedForCompare.length>=2 && !selectedForCompare.includes(run.id)"/>
+                </td>
+                <td class="px-4 py-3 text-gray-500 text-xs" x-text="'#'+run.id"></td>
+                <td class="px-4 py-3 font-mono text-xs" x-text="run.target"></td>
+                <td class="px-4 py-3 text-gray-400 text-xs" x-text="run.profile"></td>
+                <td class="px-4 py-3">
+                  <span x-show="run.category && run.category!=='ok'"
+                    class="bg-cyan-900/50 text-cyan-300 text-xs px-1.5 py-0.5 rounded" x-text="run.category"></span>
+                  <span x-show="!run.category || run.category==='ok'" class="text-gray-600 text-xs">—</span>
+                </td>
+                <td class="px-4 py-3">
+                  <span :class="badgeClass(run.status)" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="run.status"></span>
+                </td>
+                <td class="px-4 py-3 text-xs font-semibold"
+                  :class="run.risk_score<30?'text-green-400':run.risk_score<60?'text-yellow-400':'text-red-400'"
+                  x-text="run.risk_score"></td>
+                <td class="px-4 py-3 text-gray-500 text-xs" x-text="new Date(run.timestamp).toLocaleString('pl')"></td>
+                <td class="px-4 py-3 flex gap-2" @click.stop>
+                  <a :href="'/api/export/'+run.id+'/html'" target="_blank"
+                    class="text-blue-500 hover:text-blue-400 text-xs">HTML</a>
+                  <a :href="'/api/export/'+run.id+'/json'" download
+                    class="text-green-500 hover:text-green-400 text-xs">JSON</a>
+                  <button @click="deleteRun(run.id)" class="text-red-500 hover:text-red-400 text-xs">usuń</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="filteredHistory.length===0">
+              <td colspan="9" class="px-4 py-10 text-center text-gray-600">Brak historii</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════ PAGE: RUN DETAIL ═══════════ -->
+    <div x-show="currentPage==='run-detail'" x-cloak class="p-6">
+      <div class="flex items-center gap-3 mb-6">
+        <button @click="navigate('history')" class="text-cyan-400 hover:text-cyan-300 text-sm">← Wróć</button>
+        <h1 class="text-2xl font-bold" x-text="'Run #'+(selectedRun?.id||'')"></h1>
+        <template x-if="selectedRun">
+          <div class="flex gap-2 ml-auto">
+            <a :href="'/api/export/'+(selectedRun?.id)+'/html'" target="_blank"
+              class="bg-blue-700 hover:bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg">Eksport HTML</a>
+            <a :href="'/api/export/'+(selectedRun?.id)+'/json'" download
+              class="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg">Eksport JSON</a>
+          </div>
+        </template>
+      </div>
+      <template x-if="selectedRun">
+        <div class="space-y-5">
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
+              <div><div class="text-xs text-gray-500 mb-1">Target</div><div class="font-mono text-sm" x-text="selectedRun.target"></div></div>
+              <div><div class="text-xs text-gray-500 mb-1">Profil</div><div x-text="selectedRun.profile"></div></div>
+              <div><div class="text-xs text-gray-500 mb-1">Status</div>
+                <span :class="badgeClass(selectedRun.status)" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="selectedRun.status"></span></div>
+              <div><div class="text-xs text-gray-500 mb-1">Kategoria</div>
+                <span class="text-cyan-400 text-sm" x-text="selectedRun.ai_summary?.category||'—'"></span></div>
+              <div><div class="text-xs text-gray-500 mb-1">Ryzyko</div>
+                <span class="font-bold text-xl" :class="selectedRun.risk_score<30?'text-green-400':selectedRun.risk_score<60?'text-yellow-400':'text-red-400'"
+                  x-text="selectedRun.risk_score+'/100'"></span></div>
+            </div>
+          </div>
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3">Wyniki checków</h2>
+            <table class="w-full text-sm">
+              <thead><tr class="text-gray-500 text-xs border-b border-gray-800">
+                <th class="text-left pb-2 pr-4">Check</th><th class="text-left pb-2 pr-4">Status</th><th class="text-left pb-2">Podsumowanie</th>
+              </tr></thead>
+              <tbody>
+                <template x-for="[name,r] in Object.entries(selectedRun.results||{})" :key="name">
+                  <tr class="border-b border-gray-800/40">
+                    <td class="py-2 pr-4 font-mono text-xs font-semibold" x-text="name"></td>
+                    <td class="py-2 pr-4"><span :class="badgeClass(r.status)" class="px-2 py-0.5 rounded-full text-xs" x-text="r.status"></span></td>
+                    <td class="py-2 text-gray-300 text-xs" x-text="r.summary"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <div x-show="selectedRun.ai_summary?.raw_text" class="bg-gray-900 rounded-xl p-5 border border-blue-900/60">
+            <h2 class="text-sm font-semibold text-blue-400 mb-3">🤖 AI Summary</h2>
+            <pre class="text-gray-300 text-sm leading-relaxed" x-text="selectedRun.ai_summary?.raw_text"></pre>
+            <div x-show="selectedRun.ai_summary?.commands?.length>0" class="mt-4 border-t border-gray-800 pt-4">
+              <div class="text-xs text-gray-500 mb-2">💻 Sugerowane komendy:</div>
+              <template x-for="cmd in (selectedRun.ai_summary?.commands||[])" :key="cmd">
+                <div class="flex items-center gap-2 bg-gray-950 rounded px-3 py-1.5 mb-1 group">
+                  <code class="text-green-400 text-xs flex-1" x-text="cmd"></code>
+                  <button @click="copyCmd(cmd)" class="text-gray-600 hover:text-gray-300 text-xs opacity-0 group-hover:opacity-100">kopiuj</button>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ═══════════ PAGE: COMPARE ═══════════ -->
+    <div x-show="currentPage==='compare'" x-cloak class="p-6">
+      <div class="flex items-center gap-3 mb-6">
+        <button @click="navigate('history')" class="text-cyan-400 hover:text-cyan-300 text-sm">← Wróć</button>
+        <h1 class="text-2xl font-bold">Porównanie runów</h1>
+      </div>
+      <template x-if="compareRuns.length===2">
+        <div>
+          <div class="grid grid-cols-2 gap-4 mb-5">
+            <template x-for="run in compareRuns" :key="run.id">
+              <div class="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                <div class="font-mono font-semibold mb-1" x-text="'#'+run.id+' — '+run.target"></div>
+                <div class="text-xs text-gray-500 mb-2" x-text="new Date(run.timestamp).toLocaleString('pl')"></div>
+                <div class="flex gap-3 text-sm">
+                  <span :class="badgeClass(run.status)" class="px-2 py-0.5 rounded-full text-xs" x-text="run.status"></span>
+                  <span :class="run.risk_score<30?'text-green-400':run.risk_score<60?'text-yellow-400':'text-red-400'"
+                    class="font-semibold" x-text="'Ryzyko: '+run.risk_score+'/100'"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+          <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+            <table class="w-full text-sm">
+              <thead class="bg-gray-800/80">
+                <tr class="text-gray-400 text-xs">
+                  <th class="px-4 py-3 text-left">Check</th>
+                  <th class="px-4 py-3 text-left" x-text="'Run #'+compareRuns[0].id"></th>
+                  <th class="px-4 py-3 text-left" x-text="'Run #'+compareRuns[1].id"></th>
+                  <th class="px-4 py-3 text-left">Zmiana</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="name in compareChecks" :key="name">
+                  <tr class="border-t border-gray-800/50">
+                    <td class="px-4 py-3 font-mono text-xs font-semibold" x-text="name"></td>
+                    <td class="px-4 py-3">
+                      <span :class="badgeClass(compareRuns[0].results?.[name]?.status||'skipped')"
+                        class="px-2 py-0.5 rounded-full text-xs" x-text="compareRuns[0].results?.[name]?.status||'—'"></span>
+                    </td>
+                    <td class="px-4 py-3">
+                      <span :class="badgeClass(compareRuns[1].results?.[name]?.status||'skipped')"
+                        class="px-2 py-0.5 rounded-full text-xs" x-text="compareRuns[1].results?.[name]?.status||'—'"></span>
+                    </td>
+                    <td class="px-4 py-3 text-xs" x-text="compareChange(name)"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ═══════════ PAGE: ALERTS ═══════════ -->
+    <div x-show="currentPage==='alerts'" x-cloak class="p-6">
+      <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold">Alerty</h1>
+        <button @click="loadAlerts()" class="text-cyan-400 hover:text-cyan-300 text-sm">↺ Odśwież</button>
+      </div>
+      <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-800/80">
+            <tr class="text-gray-400 text-xs">
+              <th class="px-4 py-3 text-left">Severity</th>
+              <th class="px-4 py-3 text-left">Target</th>
+              <th class="px-4 py-3 text-left">Opis</th>
+              <th class="px-4 py-3 text-left">Czas</th>
+              <th class="px-4 py-3 text-left">Status</th>
+              <th class="px-4 py-3 text-left">Akcje</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="a in alertItems" :key="a.id">
+              <tr class="border-t border-gray-800/50 hover:bg-gray-800/20">
+                <td class="px-4 py-3">
+                  <span :class="{
+                    'bg-red-900/60 text-red-300': a.severity==='critical'||a.severity==='high',
+                    'bg-yellow-900/60 text-yellow-300': a.severity==='medium',
+                    'bg-blue-900/60 text-blue-300': a.severity==='low'
+                  }" class="px-2 py-0.5 rounded text-xs font-medium" x-text="a.severity"></span>
+                </td>
+                <td class="px-4 py-3 font-mono text-xs" x-text="a.target"></td>
+                <td class="px-4 py-3 text-gray-300 text-xs" x-text="a.title"></td>
+                <td class="px-4 py-3 text-gray-500 text-xs" x-text="new Date(a.timestamp).toLocaleString('pl')"></td>
+                <td class="px-4 py-3">
+                  <span x-show="!a.acknowledged" class="text-yellow-400 text-xs">● nowy</span>
+                  <span x-show="a.acknowledged" class="text-gray-600 text-xs">✓ ack</span>
+                </td>
+                <td class="px-4 py-3">
+                  <button x-show="!a.acknowledged" @click="ackAlert(a.id)" class="text-cyan-500 hover:text-cyan-400 text-xs">potwierdź</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="alertItems.length===0">
+              <td colspan="6" class="px-4 py-10 text-center text-gray-600">Brak alertów</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+function app() {
+  return {
+    // Auth
+    isLoggedIn: false, authRequired: false,
+    loginForm: { username: '', password: '' }, loginError: '',
+    token: null,
+
+    // Layout
+    currentPage: 'overview', darkMode: true,
+    pages: [
+      { id: 'overview', icon: '📡', label: 'Przegląd' },
+      { id: 'diagnose', icon: '🔍', label: 'Diagnostyka' },
+      { id: 'history', icon: '📋', label: 'Historia' },
+      { id: 'alerts', icon: '🔔', label: 'Alerty' },
+    ],
+    unreadAlerts: 0,
+
+    // Diagnose state
+    form: { target: '', profile: 'quick', use_ai: true },
+    running: false, checks: [], results: {},
+    aiText: '', aiStreaming: false, aiCategory: '', aiCommands: [], riskScore: 0,
+    hasMapData: false, traceMap: null,
+
+    // History
+    historyItems: [], historyFilter: '', historyChart: null,
+    selectedForCompare: [],
+
+    // Compare
+    compareRuns: [],
+
+    // Overview
+    overviewTargets: [], overviewChart: null,
+
+    // Alerts
+    alertItems: [],
+
+    // Selected run
+    selectedRun: null,
+
+    async init() {
+      this.darkMode = localStorage.getItem('ct_dark') !== 'false';
+      this.token = localStorage.getItem('ct_token');
+      const r = await fetch('/api/auth/me');
+      const d = await r.json();
+      this.authRequired = d.auth_required;
+      if (!this.authRequired || this.token) {
+        this.isLoggedIn = true;
+        this.loadOverview();
+        this.loadAlerts();
+      }
+      this.$watch('currentPage', page => {
+        if (page === 'history') this.loadHistory();
+        if (page === 'alerts') this.loadAlerts();
+        if (page === 'overview') this.loadOverview();
+      });
+    },
+
+    async doLogin() {
+      this.loginError = '';
+      const r = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this.loginForm)
+      });
+      if (r.ok) {
+        const d = await r.json();
+        this.token = d.access_token;
+        localStorage.setItem('ct_token', this.token);
+        this.isLoggedIn = true;
+        this.loadOverview();
+      } else {
+        const e = await r.json();
+        this.loginError = e.detail || 'Błąd logowania';
+      }
+    },
+
+    doLogout() {
+      this.token = null; this.isLoggedIn = false;
+      localStorage.removeItem('ct_token');
+    },
+
+    authHeaders() {
+      return this.token ? { 'Authorization': 'Bearer ' + this.token } : {};
+    },
+
+    navigate(page) { this.currentPage = page; },
+
+    savePref() { localStorage.setItem('ct_dark', this.darkMode); },
+
+    badgeClass(status) {
+      return {
+        ok: 'bg-green-900/60 text-green-300',
+        warning: 'bg-yellow-900/60 text-yellow-300',
+        error: 'bg-red-900/60 text-red-300',
+        timeout: 'bg-red-900/60 text-red-300',
+        skipped: 'bg-gray-800 text-gray-500',
+      }[status] || 'bg-gray-800 text-gray-500';
+    },
+
+    async startDiagnose() {
+      if (!this.form.target || this.running) return;
+      this.running = true; this.checks = []; this.results = {};
+      this.aiText = ''; this.aiStreaming = false; this.aiCategory = '';
+      this.aiCommands = []; this.riskScore = 0; this.hasMapData = false;
+
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${proto}://${location.host}/ws/diagnose`);
+
+      ws.onopen = () => ws.send(JSON.stringify({
+        target: this.form.target, profile: this.form.profile, use_ai: this.form.use_ai
+      }));
+
+      ws.onmessage = (evt) => {
+        const msg = JSON.parse(evt.data);
+        if (msg.event === 'init') {
+          this.checks = msg.checks.map(n => ({ name: n, state: 'pending', summary: '' }));
+        } else if (msg.event === 'check_start') {
+          const c = this.checks.find(c => c.name === msg.check);
+          if (c) c.state = 'running';
+        } else if (msg.event === 'check_done') {
+          const c = this.checks.find(c => c.name === msg.check);
+          if (c) { c.state = msg.result.status; c.summary = msg.result.summary; }
+          this.results[msg.check] = msg.result;
+          this.results = {...this.results};
+          if (msg.check === 'traceroute') this.renderTraceMap(msg.result);
+        } else if (msg.event === 'ai_start') {
+          this.aiStreaming = true; this.aiText = '';
+        } else if (msg.event === 'ai_token') {
+          this.aiText += msg.token;
+        } else if (msg.event === 'ai_done') {
+          this.aiStreaming = false;
+          this.aiText = msg.ai_summary?.raw_text || this.aiText;
+          this.riskScore = msg.ai_summary?.risk_score || 0;
+          this.aiCategory = msg.ai_summary?.category || '';
+          this.aiCommands = msg.ai_summary?.commands || [];
+        } else if (msg.event === 'complete') {
+          this.running = false; ws.close();
+        } else if (msg.event === 'error') {
+          this.running = false; ws.close();
+        }
+      };
+      ws.onerror = ws.onclose = () => { this.running = false; };
+    },
+
+    renderTraceMap(result) {
+      const hops = result?.data?.hops || [];
+      const geoHops = hops.filter(h => h.geo && h.geo.lat && h.geo.lon);
+      if (geoHops.length === 0) return;
+      this.hasMapData = true;
+      this.$nextTick(() => {
+        if (this.traceMap) { this.traceMap.remove(); this.traceMap = null; }
+        const map = L.map('traceMap', { zoomControl: true });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap', maxZoom: 18
+        }).addTo(map);
+        const latlngs = [];
+        geoHops.forEach((h, i) => {
+          const ll = [h.geo.lat, h.geo.lon];
+          latlngs.push(ll);
+          const rtt = h.avg_rtt_ms ? `${h.avg_rtt_ms.toFixed(1)}ms` : '?';
+          const city = h.geo.city || '';
+          const country = h.geo.country || '';
+          const org = h.geo.org || '';
+          L.circleMarker(ll, {
+            radius: 7, fillColor: i===0?'#22c55e':i===geoHops.length-1?'#3b82f6':'#f59e0b',
+            color: '#fff', weight: 1.5, fillOpacity: 0.9
+          }).bindPopup(`<b>Hop ${h.hop}: ${h.ip}</b><br>${city} ${country}<br>${org}<br>RTT: ${rtt}`).addTo(map);
+        });
+        if (latlngs.length > 1) L.polyline(latlngs, { color: '#06b6d4', weight: 2, opacity: 0.7 }).addTo(map);
+        map.fitBounds(latlngs, { padding: [20, 20] });
+        this.traceMap = map;
+      });
+    },
+
+    async loadHistory() {
+      const url = this.historyFilter ? `/api/history?target=${encodeURIComponent(this.historyFilter)}&limit=50` : '/api/history?limit=50';
+      const r = await fetch(url, { headers: this.authHeaders() });
+      const d = await r.json();
+      this.historyItems = (d.items || []).map(run => ({
+        ...run,
+        category: run.ai_summary?.category || null
+      }));
+      this.$nextTick(() => this.renderRiskChart());
+    },
+
+    get filteredHistory() {
+      if (!this.historyFilter) return this.historyItems;
+      const f = this.historyFilter.toLowerCase();
+      return this.historyItems.filter(r => r.target.toLowerCase().includes(f));
+    },
+
+    async viewRun(id) {
+      const r = await fetch(`/api/history/${id}`, { headers: this.authHeaders() });
+      this.selectedRun = await r.json();
+      this.navigate('run-detail');
+    },
+
+    async deleteRun(id) {
+      if (!confirm('Usunąć ten wpis?')) return;
+      await fetch(`/api/history/${id}`, { method: 'DELETE', headers: this.authHeaders() });
+      this.loadHistory();
+    },
+
+    toggleSelectAll(evt) {
+      if (evt.target.checked) {
+        this.selectedForCompare = this.filteredHistory.slice(0,2).map(r=>r.id);
+      } else {
+        this.selectedForCompare = [];
+      }
+    },
+
+    async navigate(page) {
+      if (page === 'compare' && this.selectedForCompare.length === 2) {
+        const [r1, r2] = await Promise.all(
+          this.selectedForCompare.map(id => fetch(`/api/history/${id}`, {headers: this.authHeaders()}).then(r=>r.json()))
+        );
+        this.compareRuns = [r1, r2];
+      }
+      this.currentPage = page;
+    },
+
+    get compareChecks() {
+      if (this.compareRuns.length < 2) return [];
+      const s = new Set([
+        ...Object.keys(this.compareRuns[0].results||{}),
+        ...Object.keys(this.compareRuns[1].results||{})
+      ]);
+      return [...s];
+    },
+
+    compareChange(name) {
+      const s1 = this.compareRuns[0].results?.[name]?.status;
+      const s2 = this.compareRuns[1].results?.[name]?.status;
+      if (!s1 && !s2) return '—';
+      if (s1 === s2) return '— bez zmian';
+      const order = {ok:0, warning:1, error:2, timeout:2, skipped:3};
+      const o1 = order[s1]??3, o2 = order[s2]??3;
+      if (o2 > o1) return '↓ pogorszyło się';
+      if (o2 < o1) return '↑ poprawiło się';
+      return '→ zmienił się';
+    },
+
+    async loadOverview() {
+      const r = await fetch('/api/history?limit=100', { headers: this.authHeaders() });
+      const d = await r.json();
+      const items = d.items || [];
+      const byTarget = {};
+      for (const run of items) {
+        if (!byTarget[run.target]) byTarget[run.target] = run;
+      }
+      this.overviewTargets = Object.values(byTarget).map(r => ({
+        ...r,
+        checks: (r.checks_run||[]).length,
+        ago: this.timeAgo(r.timestamp),
+        category: null,
+      }));
+      this.$nextTick(() => this.renderOverviewChart(items.slice(0,20).reverse()));
+    },
+
+    timeAgo(ts) {
+      const diff = Date.now() - new Date(ts).getTime();
+      const mins = Math.floor(diff/60000);
+      if (mins < 1) return 'przed chwilą';
+      if (mins < 60) return `${mins} min temu`;
+      const hrs = Math.floor(mins/60);
+      if (hrs < 24) return `${hrs}h temu`;
+      return `${Math.floor(hrs/24)}d temu`;
+    },
+
+    renderOverviewChart(items) {
+      const canvas = document.getElementById('overviewChart');
+      if (!canvas || items.length === 0) return;
+      if (this.overviewChart) this.overviewChart.destroy();
+      const labels = items.map(r => `#${r.id}`);
+      const scores = items.map(r => r.risk_score);
+      const colors = scores.map(s => s < 30 ? '#22c55e' : s < 60 ? '#eab308' : '#ef4444');
+      this.overviewChart = new Chart(canvas, {
+        type: 'bar',
+        data: { labels, datasets: [{ label:'Risk', data:scores, backgroundColor:colors, borderRadius:3 }] },
+        options: {
+          responsive:true, plugins:{legend:{display:false}},
+          scales:{
+            x:{ticks:{color:'#6b7280',font:{size:10}},grid:{color:'#1f2937'}},
+            y:{min:0,max:100,ticks:{color:'#6b7280'},grid:{color:'#1f2937'}}
+          }
+        }
+      });
+    },
+
+    renderRiskChart() {
+      const canvas = document.getElementById('riskChart');
+      if (!canvas || this.historyItems.length === 0) return;
+      if (this.historyChart) this.historyChart.destroy();
+      const items = [...this.filteredHistory].reverse().slice(-20);
+      const labels = items.map(r => `#${r.id} ${r.target}`);
+      const scores = items.map(r => r.risk_score);
+      const colors = scores.map(s => s < 30 ? '#22c55e' : s < 60 ? '#eab308' : '#ef4444');
+      this.historyChart = new Chart(canvas, {
+        type: 'bar',
+        data: { labels, datasets: [{ label:'Risk', data:scores, backgroundColor:colors, borderRadius:3 }] },
+        options: {
+          responsive:true, plugins:{legend:{display:false}},
+          scales:{
+            x:{ticks:{color:'#6b7280',font:{size:10}},grid:{color:'#1f2937'}},
+            y:{min:0,max:100,ticks:{color:'#6b7280'},grid:{color:'#1f2937'}}
+          }
+        }
+      });
+    },
+
+    async loadAlerts() {
+      const r = await fetch('/api/alerts', { headers: this.authHeaders() });
+      const d = await r.json();
+      this.alertItems = d.items || [];
+      this.unreadAlerts = this.alertItems.filter(a => !a.acknowledged).length;
+    },
+
+    async ackAlert(id) {
+      await fetch(`/api/alerts/${id}/ack`, { method: 'PATCH', headers: this.authHeaders() });
+      this.loadAlerts();
+    },
+
+    copyCmd(cmd) {
+      navigator.clipboard.writeText(cmd).catch(() => {});
+    },
+  };
+}
+</script>
+</body>
+</html>
