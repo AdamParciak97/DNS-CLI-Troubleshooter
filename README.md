@@ -228,3 +228,8 @@ cli-troubleshooter/
 ## 📄 Licencja
 
 MIT
+
+
+## 📸 Screenshots
+<img width="943" height="902" alt="image" src="https://github.com/user-attachments/assets/69ce17f5-c906-4ec4-8bdf-f7b20be40300" />
+
